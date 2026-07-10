@@ -1,0 +1,1 @@
+<img src="assets/header.svg" width="100%" alt="Pixel-art scene of a cozy room at night — an empty chair at a desk where a cmux session runs Claude on an ultrawide monitor, a window over a moonlit city skyline, a sleeping cat, lofi vibes">
