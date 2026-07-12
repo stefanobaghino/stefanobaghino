@@ -1,5 +1,5 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/alps-night.svg">
-  <source media="(prefers-color-scheme: light)" srcset="assets/alps-day.svg">
-  <img src="assets/alps-day.svg" width="100%" alt="Pixel-art alpine panorama — a high meadow with tiered spruces, granite outcrops and a winding footpath, hazy blue ridges receding toward a snow-capped massif">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/dag-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/dag-light.svg">
+  <img src="assets/dag-light.svg" width="100%" alt="Animated directed acyclic graph — a computation pulses from two source nodes through hollow circular nodes to a single sink, each node lighting up as its inputs arrive">
 </picture>
