@@ -6,17 +6,24 @@ Self-contained SVGs animated with pure CSS (works inside GitHub's <img>
 proxy, honors prefers-reduced-motion). Pulses travel along edges at
 constant speed; a node activates when its last input arrives, stays lit
 while the computation completes, then everything fades back to idle.
+
+The graph is grown from a seeded RNG: quasi-layers with jittered
+positions and radii, 1-3 parents per node, occasional layer-skipping
+edges, all subject to a node-clearance check so no edge grazes an
+unrelated node. Accents are sampled from a three-stop gradient by
+horizontal position, so the wave shifts hue as it advances.
 """
 
 import math
 import os
+import random
 
-W, H = 1024, 256
-R = 9            # node radius
-R_SINK = 12
+PHI = (1 + math.sqrt(5)) / 2
+W = 1024
+H = round(W / PHI)
 GAP = 4          # gap between node rim and edge endpoint
-SPEED = 300.0    # pulse speed, viewBox px/s
-PROC = 0.22      # per-node processing delay before emitting
+SPEED = 340.0    # pulse speed, viewBox px/s
+PROC = 0.18      # per-node processing delay before emitting
 FLASH = 0.12     # activation flash duration
 SETTLE = 0.30    # flash -> steady lit
 RIPPLE = 0.7     # ripple ring lifetime
@@ -24,48 +31,151 @@ HOLD = 1.3       # steady-lit time after the sink activates
 FADE = 0.8       # global fade back to idle
 REST = 0.6       # idle time before the cycle restarts
 
-NODES = [
-    (55, 80), (55, 176),                    # 0-1 sources
-    (190, 48), (190, 128), (190, 208),      # 2-4
-    (330, 88), (330, 168),                  # 5-6
-    (470, 40), (470, 128), (470, 216),      # 7-9
-    (610, 80), (610, 176),                  # 10-11
-    (750, 48), (750, 128), (750, 208),      # 12-14
-    (940, 128),                             # 15 sink
-]
-SINK = 15
-SOURCES = {0: 0.0, 1: 0.3}
-
-EDGES = [
-    (0, 2), (0, 3), (1, 3), (1, 4),
-    (2, 5), (3, 5), (3, 6), (4, 6),
-    (2, 7), (5, 7), (5, 8), (6, 8), (6, 9), (4, 9),
-    (7, 10), (8, 10), (8, 11), (9, 11),
-    (10, 12), (10, 13), (11, 13), (11, 14),
-    (7, 12), (9, 14),
-    (12, 15), (13, 15), (14, 15),
-]
+LAYER_X = [55, 162, 280, 395, 508, 624, 740, 854, 965]
+LAYER_N = [3, 4, 5, 5, 4, 5, 4, 3, 1]
+Y0, Y1 = 48, H - 48
 
 THEMES = {
     "light": dict(
         base="#8a95a3",    # idle node ring
         edge="#b9c2ce",    # edge lines
-        accent="#d97757",  # pulses + activation flash
-        lit="#c9633f",     # steady lit ring
+        stops=["#0969da", "#8250df", "#bf3989"],  # accent gradient
         hi=0.45, lo=0.14,  # disc opacity: flash, steady
     ),
     "dark": dict(
         base="#6b7684",
         edge="#3a434f",
-        accent="#e08a63",
-        lit="#d97757",
-        hi=0.6, lo=0.3,
+        stops=["#58a6ff", "#a371f7", "#f778ba"],
+        hi=0.6, lo=0.36,
     ),
 }
 
 
-def radius(n):
-    return R_SINK if n == SINK else R
+def make_graph(rng):
+    nodes, radii, layers = [], [], []
+    last = len(LAYER_X) - 1
+    for li, (bx, cnt) in enumerate(zip(LAYER_X, LAYER_N)):
+        idxs = []
+        slot = (Y1 - Y0) / cnt
+        for k in range(cnt):
+            if li == last:
+                x, y, r = bx, (Y0 + Y1) / 2, 13.0
+            else:
+                jx = 6 if li == 0 else 24
+                x = bx + rng.uniform(-jx, jx)
+                y = Y0 + slot * (k + 0.5) + rng.uniform(-0.32, 0.32) * slot
+                r = rng.uniform(7.2, 10.8)
+            idxs.append(len(nodes))
+            nodes.append((x, y))
+            radii.append(r)
+        layers.append(idxs)
+
+    def clear_ok(a, b, margin=19):
+        ax, ay = nodes[a]
+        bx, by = nodes[b]
+        for j, (px, py) in enumerate(nodes):
+            if j in (a, b):
+                continue
+            t = ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / (
+                (bx - ax) ** 2 + (by - ay) ** 2
+            )
+            if 0 < t < 1:
+                if math.hypot(ax + t * (bx - ax) - px, ay + t * (by - ay) - py) < margin:
+                    return False
+        return True
+
+    edges = set()
+    for li in range(len(layers) - 1):
+        cur, nxt = layers[li], layers[li + 1]
+        for c in nxt:
+            cands = sorted(cur, key=lambda p: abs(nodes[p][1] - nodes[c][1]))
+            p0 = next((p for p in cands if clear_ok(p, c)), cands[0])
+            edges.add((p0, c))
+            for p in cands[1:3]:
+                if (
+                    rng.random() < 0.4
+                    and sum(1 for e in edges if e[1] == c) < 3
+                    and clear_ok(p, c)
+                ):
+                    edges.add((p, c))
+        for p in cur:
+            if not any(e[0] == p for e in edges):
+                c = min(nxt, key=lambda q: abs(nodes[q][1] - nodes[p][1]))
+                edges.add((p, c))
+    for li in range(len(layers) - 2):
+        for _ in range(3):
+            p = rng.choice(layers[li])
+            c = rng.choice(layers[li + 2])
+            if (
+                rng.random() < 0.5
+                and abs(nodes[p][1] - nodes[c][1]) < 140
+                and clear_ok(p, c)
+            ):
+                edges.add((p, c))
+
+    return nodes, radii, layers, sorted(edges)
+
+
+def _crossings(nodes, edges):
+    def orient(p, q, r):
+        v = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return (v > 0) - (v < 0)
+
+    count = 0
+    for i, (a, b) in enumerate(edges):
+        for c, d in edges[i + 1:]:
+            if len({a, b, c, d}) < 4:
+                continue
+            p1, p2, p3, p4 = nodes[a], nodes[b], nodes[c], nodes[d]
+            if (
+                orient(p1, p2, p3) != orient(p1, p2, p4)
+                and orient(p3, p4, p1) != orient(p3, p4, p2)
+            ):
+                count += 1
+    return count
+
+
+def _min_dist(nodes):
+    return min(
+        math.hypot(ax - bx, ay - by)
+        for i, (ax, ay) in enumerate(nodes)
+        for bx, by in nodes[i + 1:]
+    )
+
+
+def pick_graph():
+    """Search seeds for a well-separated layout with few edge crossings."""
+    best = None
+    for seed in range(200):
+        g = make_graph(random.Random(seed))
+        nodes, _, _, edges = g
+        if _min_dist(nodes) < 36:
+            continue
+        score = _crossings(nodes, edges)
+        if best is None or score < best[0]:
+            best = (score, seed, g)
+    return best
+
+
+_SCORE, _SEED, (NODES, RADII, LAYERS, EDGES) = pick_graph()
+SINK = LAYERS[-1][0]
+SOURCES = {n: 0.25 * i for i, n in enumerate(LAYERS[0])}
+
+
+def hexrgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def grad(stops, t):
+    t = min(max(t, 0), 1) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    a, b = hexrgb(stops[i]), hexrgb(stops[i + 1])
+    f = t - i
+    return "#%02x%02x%02x" % tuple(round(a[k] + (b[k] - a[k]) * f) for k in range(3))
+
+
+def accent_at(stops, x):
+    return grad(stops, (x - LAYER_X[0]) / (LAYER_X[-1] - LAYER_X[0]))
 
 
 def geometry():
@@ -76,7 +186,7 @@ def geometry():
         bx, by = NODES[b]
         d = math.hypot(bx - ax, by - ay)
         ux, uy = (bx - ax) / d, (by - ay) / d
-        ta, tb = radius(a) + GAP, radius(b) + GAP
+        ta, tb = RADII[a] + GAP, RADII[b] + GAP
         x0, y0 = ax + ux * ta, ay + uy * ta
         x1, y1 = bx - ux * tb, by - uy * tb
         segs.append((x0, y0, x1 - x0, y1 - y0, d - ta - tb))
@@ -134,6 +244,7 @@ def build(theme):
     # node activation: ring color, inner disc, ripple
     for n in range(len(NODES)):
         t = act[n]
+        acc = accent_at(c["stops"], NODES[n][0])
         css.append(
             f".r{n}{{animation:r{n} {T:.3f}s linear infinite}}"
             f".d{n}{{animation:d{n} {T:.3f}s linear infinite}}"
@@ -142,8 +253,7 @@ def build(theme):
         anim.append(
             f"@keyframes r{n}{{"
             f"0%,{pct(t)}{{stroke:{c['base']}}}"
-            f"{pct(t + FLASH)}{{stroke:{c['accent']}}}"
-            f"{pct(t + FLASH + SETTLE)},{pct(t_end)}{{stroke:{c['lit']}}}"
+            f"{pct(t + FLASH)},{pct(t_end)}{{stroke:{acc}}}"
             f"{pct(t_end + FADE)},100%{{stroke:{c['base']}}}"
             f"}}"
         )
@@ -170,7 +280,7 @@ def build(theme):
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
         f'width="{W}" height="{H}" role="img" '
-        f'aria-label="Animated directed acyclic graph: a computation flows from two source nodes through the graph to a single sink">',
+        f'aria-label="Animated directed acyclic graph: a computation flows from three source nodes through an uneven graph to a single sink">',
         f"<style>{''.join(css)}{''.join(anim)}</style>",
     ]
 
@@ -180,21 +290,23 @@ def build(theme):
             f'x2="{x0 + dx:.1f}" y2="{y0 + dy:.1f}"/>'
         )
 
-    for i, (x0, y0, _, _, _) in enumerate(segs):
+    for i, (x0, y0, dx, dy, _) in enumerate(segs):
+        mid = accent_at(c["stops"], NODES[EDGES[i][0]][0] + dx / 2)
         parts.append(
             f'<g class="pulse p{i}">'
-            f'<circle cx="{x0:.1f}" cy="{y0:.1f}" r="6.5" fill="{c["accent"]}" fill-opacity=".22"/>'
-            f'<circle cx="{x0:.1f}" cy="{y0:.1f}" r="3.2" fill="{c["accent"]}"/>'
+            f'<circle cx="{x0:.1f}" cy="{y0:.1f}" r="6.5" fill="{mid}" fill-opacity=".22"/>'
+            f'<circle cx="{x0:.1f}" cy="{y0:.1f}" r="3.2" fill="{mid}"/>'
             f"</g>"
         )
 
     for n, (x, y) in enumerate(NODES):
-        r = radius(n)
+        r = RADII[n]
+        acc = accent_at(c["stops"], x)
         parts.append(
-            f'<circle class="ripl w{n}" cx="{x}" cy="{y}" r="{r}" '
-            f'fill="none" stroke="{c["accent"]}" stroke-width="1.5"/>'
-            f'<circle class="disc d{n}" cx="{x}" cy="{y}" r="{r - 3}" fill="{c["accent"]}"/>'
-            f'<circle class="ring r{n}" cx="{x}" cy="{y}" r="{r}"/>'
+            f'<circle class="ripl w{n}" cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" '
+            f'fill="none" stroke="{acc}" stroke-width="1.5"/>'
+            f'<circle class="disc d{n}" cx="{x:.1f}" cy="{y:.1f}" r="{r - 3:.1f}" fill="{acc}"/>'
+            f'<circle class="ring r{n}" cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}"/>'
         )
 
     parts.append("</svg>")
@@ -203,6 +315,10 @@ def build(theme):
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
+    segs = geometry()
+    act, _ = schedule(segs)
+    print(f"seed {_SEED} ({_SCORE} crossings), {len(NODES)} nodes, {len(EDGES)} edges, "
+          f"sink at {act[SINK]:.2f}s, cycle {act[SINK] + HOLD + FADE + REST:.2f}s")
     for theme in THEMES:
         path = os.path.join(here, f"dag-{theme}.svg")
         svg = build(theme)
